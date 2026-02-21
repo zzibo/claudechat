@@ -1,28 +1,40 @@
 import { describe, it, expect } from "vitest";
 
-describe("MCP Server", () => {
-  it("module exports exist", async () => {
-    const module = await import("../src/tools/memory.js");
-    expect(module.writeMemory).toBeDefined();
-    expect(module.recall).toBeDefined();
-    expect(module.updateMemory).toBeDefined();
-    expect(module.deleteMemory).toBeDefined();
+describe("MCP Server v2", () => {
+  it("channel tool modules export correctly", async () => {
+    const channels = await import("../src/tools/channels.js");
+    expect(channels.createChannel).toBeDefined();
+    expect(channels.listChannels).toBeDefined();
+    expect(channels.connectRepo).toBeDefined();
+    expect(channels.disconnectRepo).toBeDefined();
   });
 
-  it("all tool modules export correctly", async () => {
-    const spaces = await import("../src/tools/spaces.js");
-    expect(spaces.createSpace).toBeDefined();
-    expect(spaces.listSpaces).toBeDefined();
+  it("messaging tool modules export correctly", async () => {
+    const messaging = await import("../src/tools/messaging.js");
+    expect(messaging.postMessage).toBeDefined();
+    expect(messaging.checkMessages).toBeDefined();
+    expect(messaging.getNewMessageNotifications).toBeDefined();
+  });
 
+  it("search tool modules export correctly", async () => {
+    const search = await import("../src/tools/search.js");
+    expect(search.searchChannel).toBeDefined();
+    expect(search.pinMessage).toBeDefined();
+  });
+
+  it("briefing tool modules export correctly", async () => {
+    const briefing = await import("../src/tools/briefing.js");
+    expect(briefing.joinChannel).toBeDefined();
+  });
+
+  it("handoff tool modules export correctly", async () => {
     const handoff = await import("../src/tools/handoff.js");
-    expect(handoff.generateHandoff).toBeDefined();
-    expect(handoff.receiveHandoff).toBeDefined();
+    expect(handoff.postHandoff).toBeDefined();
+  });
 
-    const corrections = await import("../src/tools/corrections.js");
-    expect(corrections.trackCorrection).toBeDefined();
-    expect(corrections.getCorrections).toBeDefined();
-
-    const context = await import("../src/tools/context.js");
-    expect(context.getContext).toBeDefined();
+  it("compression modules export correctly", async () => {
+    const compression = await import("../src/tools/compression.js");
+    expect(compression.compressChannel).toBeDefined();
+    expect(compression.extractActionLines).toBeDefined();
   });
 });
