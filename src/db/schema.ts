@@ -15,130 +15,77 @@ export function applySchema(db: Database.Database): void {
     CREATE TABLE schema_version (
       version INTEGER NOT NULL
     );
-    INSERT INTO schema_version (version) VALUES (1);
+    INSERT INTO schema_version (version) VALUES (2);
 
-    CREATE TABLE spaces (
+    CREATE TABLE channels (
       id TEXT PRIMARY KEY,
       description TEXT NOT NULL,
+      context_budget INTEGER NOT NULL DEFAULT 4000,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    CREATE TABLE memories (
-      id TEXT PRIMARY KEY,
-      space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
-      category TEXT NOT NULL CHECK (category IN ('convention', 'decision', 'context', 'preference', 'task')),
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      source_repo TEXT NOT NULL,
-      tags TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE INDEX idx_memories_space ON memories(space_id);
-    CREATE INDEX idx_memories_category ON memories(category);
-    CREATE INDEX idx_memories_source_repo ON memories(source_repo);
-
-    CREATE TABLE memory_versions (
-      id TEXT PRIMARY KEY,
-      memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      tags TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE INDEX idx_memory_versions_memory ON memory_versions(memory_id);
-
-    CREATE TABLE space_repos (
-      space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+    CREATE TABLE channel_repos (
+      channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
       repo_path TEXT NOT NULL,
-      PRIMARY KEY (space_id, repo_path)
+      last_read_at TEXT NOT NULL DEFAULT (datetime('now')),
+      joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (channel_id, repo_path)
     );
 
-    CREATE INDEX idx_space_repos_repo ON space_repos(repo_path);
+    CREATE INDEX idx_channel_repos_repo ON channel_repos(repo_path);
 
-    CREATE TABLE handoffs (
+    CREATE TABLE messages (
       id TEXT PRIMARY KEY,
-      repo_path TEXT NOT NULL,
-      space_id TEXT REFERENCES spaces(id) ON DELETE SET NULL,
-      summary TEXT NOT NULL,
-      completed TEXT NOT NULL DEFAULT '[]',
-      in_progress TEXT NOT NULL DEFAULT '[]',
-      next_steps TEXT NOT NULL DEFAULT '[]',
-      pending_decisions TEXT NOT NULL DEFAULT '[]',
-      context_notes TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      is_active INTEGER NOT NULL DEFAULT 1
-    );
-
-    CREATE INDEX idx_handoffs_repo ON handoffs(repo_path);
-    CREATE INDEX idx_handoffs_active ON handoffs(repo_path, is_active);
-
-    CREATE TABLE corrections (
-      id TEXT PRIMARY KEY,
-      space_id TEXT REFERENCES spaces(id) ON DELETE SET NULL,
-      context TEXT NOT NULL,
-      wrong_behavior TEXT NOT NULL,
-      correct_behavior TEXT NOT NULL,
-      source_repo TEXT NOT NULL,
-      tags TEXT NOT NULL DEFAULT '',
+      channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+      type TEXT NOT NULL CHECK (type IN ('chat', 'decision', 'convention', 'correction', 'handoff', 'task')),
+      sender_repo TEXT NOT NULL,
+      content TEXT NOT NULL,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      is_pinned INTEGER NOT NULL DEFAULT 0,
+      is_compressed INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    CREATE INDEX idx_corrections_space ON corrections(space_id);
-    CREATE INDEX idx_corrections_repo ON corrections(source_repo);
+    CREATE INDEX idx_messages_channel ON messages(channel_id);
+    CREATE INDEX idx_messages_type ON messages(type);
+    CREATE INDEX idx_messages_created ON messages(channel_id, created_at);
+    CREATE INDEX idx_messages_uncompressed ON messages(channel_id, is_compressed, created_at);
 
-    CREATE VIRTUAL TABLE memories_fts USING fts5(
-      title,
+    CREATE TABLE summaries (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      message_count INTEGER NOT NULL,
+      period_start TEXT NOT NULL,
+      period_end TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX idx_summaries_channel ON summaries(channel_id, period_start);
+
+    CREATE VIRTUAL TABLE messages_fts USING fts5(
       content,
-      tags,
-      content = 'memories',
+      metadata,
+      content = 'messages',
       content_rowid = 'rowid',
       tokenize = 'porter unicode61'
     );
 
-    CREATE TRIGGER memories_fts_insert AFTER INSERT ON memories BEGIN
-      INSERT INTO memories_fts(rowid, title, content, tags)
-      VALUES (new.rowid, new.title, new.content, new.tags);
+    CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+      INSERT INTO messages_fts(rowid, content, metadata)
+      VALUES (new.rowid, new.content, new.metadata);
     END;
 
-    CREATE TRIGGER memories_fts_delete AFTER DELETE ON memories BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, title, content, tags)
-      VALUES ('delete', old.rowid, old.title, old.content, old.tags);
+    CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, content, metadata)
+      VALUES ('delete', old.rowid, old.content, old.metadata);
     END;
 
-    CREATE TRIGGER memories_fts_update AFTER UPDATE ON memories BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, title, content, tags)
-      VALUES ('delete', old.rowid, old.title, old.content, old.tags);
-      INSERT INTO memories_fts(rowid, title, content, tags)
-      VALUES (new.rowid, new.title, new.content, new.tags);
-    END;
-
-    CREATE VIRTUAL TABLE corrections_fts USING fts5(
-      context,
-      wrong_behavior,
-      correct_behavior,
-      content = 'corrections',
-      content_rowid = 'rowid',
-      tokenize = 'porter unicode61'
-    );
-
-    CREATE TRIGGER corrections_fts_insert AFTER INSERT ON corrections BEGIN
-      INSERT INTO corrections_fts(rowid, context, wrong_behavior, correct_behavior)
-      VALUES (new.rowid, new.context, new.wrong_behavior, new.correct_behavior);
-    END;
-
-    CREATE TRIGGER corrections_fts_delete AFTER DELETE ON corrections BEGIN
-      INSERT INTO corrections_fts(corrections_fts, rowid, context, wrong_behavior, correct_behavior)
-      VALUES ('delete', old.rowid, old.context, old.wrong_behavior, old.correct_behavior);
-    END;
-
-    CREATE TRIGGER corrections_fts_update AFTER UPDATE ON corrections BEGIN
-      INSERT INTO corrections_fts(corrections_fts, rowid, context, wrong_behavior, correct_behavior)
-      VALUES ('delete', old.rowid, old.context, old.wrong_behavior, old.correct_behavior);
-      INSERT INTO corrections_fts(rowid, context, wrong_behavior, correct_behavior)
-      VALUES (new.rowid, new.context, new.wrong_behavior, new.correct_behavior);
+    CREATE TRIGGER messages_fts_update AFTER UPDATE ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, content, metadata)
+      VALUES ('delete', old.rowid, old.content, old.metadata);
+      INSERT INTO messages_fts(rowid, content, metadata)
+      VALUES (new.rowid, new.content, new.metadata);
     END;
   `);
 }

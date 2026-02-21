@@ -3,8 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 
-const MEMORY_DIR = join(homedir(), ".claude-memory");
-const DB_PATH = join(MEMORY_DIR, "memory.db");
+const MEMORY_DIR = join(homedir(), ".claudechat");
+const DB_PATH = join(MEMORY_DIR, "claudechat.db");
 
 export function getConnection(dbPath?: string): Database.Database {
   const path = dbPath ?? DB_PATH;

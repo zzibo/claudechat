@@ -4,212 +4,158 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { getConnection } from "./db/connection.js";
 import { applySchema } from "./db/schema.js";
-import { writeMemory, recall, updateMemory, deleteMemory } from "./tools/memory.js";
-import { getContext } from "./tools/context.js";
-import { createSpace, listSpaces, addRepoToSpace, removeRepoFromSpace } from "./tools/spaces.js";
-import { generateHandoff, receiveHandoff } from "./tools/handoff.js";
-import { trackCorrection, getCorrections } from "./tools/corrections.js";
+import {
+  createChannel,
+  listChannels,
+  connectRepo,
+  disconnectRepo,
+} from "./tools/channels.js";
+import {
+  postMessage,
+  checkMessages,
+  getNewMessageNotifications,
+} from "./tools/messaging.js";
+import { searchChannel, pinMessage } from "./tools/search.js";
+import { joinChannel } from "./tools/briefing.js";
+import { postHandoff } from "./tools/handoff.js";
+import { compressChannel } from "./tools/compression.js";
 import { detectRepo } from "./utils/repo.js";
 
-// Initialize database
 const db = getConnection();
 applySchema(db);
 
 const server = new McpServer({
-  name: "claude-memory",
-  version: "0.1.0",
+  name: "claudechat",
+  version: "0.2.0",
 });
 
-// --- Core Memory Tools ---
+// Helper: format notification banner
+function notificationBanner(repoPath: string): string {
+  const notifs = getNewMessageNotifications(db, repoPath);
+  if (notifs.length === 0) return "";
+  const lines = notifs.map(
+    (n) =>
+      `- [${n.sender_repo.split("/").pop()}] ${n.content.slice(0, 120)}`
+  );
+  return `\n\n📬 ${notifs.length} new message(s):\n${lines.join("\n")}`;
+}
+
+// --- Channel Management ---
 
 server.tool(
-  "write_memory",
-  "Store a new memory in a named space",
+  "create_channel",
+  "Create a new shared channel for agent communication",
   {
-    space: z.string().describe("Name of the memory space"),
-    category: z.enum(["convention", "decision", "context", "preference", "task"]).describe("Memory category"),
-    title: z.string().describe("Short summary of this memory"),
-    content: z.string().describe("The full memory content"),
-    tags: z.string().optional().describe("Comma-separated tags for filtering"),
+    name: z.string().describe("Unique channel name (e.g., 'fullstack-app')"),
+    description: z.string().describe("What this channel coordinates"),
+    context_budget: z
+      .number()
+      .optional()
+      .describe("Max tokens for context briefing (default 4000)"),
   },
-  async ({ space, category, title, content, tags }) => {
-    const mem = writeMemory(db, {
-      space,
-      category,
-      title,
-      content,
-      source_repo: detectRepo(),
-      tags,
-    });
-    return {
-      content: [{ type: "text", text: JSON.stringify(mem, null, 2) }],
-    };
-  }
-);
-
-server.tool(
-  "recall",
-  "Search memories using natural language. Returns ranked results using FTS5 with recency and repo affinity boosts.",
-  {
-    query: z.string().describe("Natural language search query"),
-    space: z.string().optional().describe("Filter to a specific space"),
-    category: z.string().optional().describe("Filter by category"),
-    tags: z.string().optional().describe("Filter by comma-separated tags"),
-    limit: z.number().optional().describe("Max results to return (default 10)"),
-  },
-  async ({ query, space, category, tags, limit }) => {
-    const results = recall(db, {
-      query,
-      space,
-      category,
-      tags,
-      limit,
-      current_repo: detectRepo(),
-    });
-
-    if (results.length === 0) {
-      return {
-        content: [{ type: "text", text: "No memories found matching that query." }],
-      };
-    }
-
-    const formatted = results
-      .map(
-        (m, i) =>
-          `${i + 1}. [${m.category}] ${m.title}\n   Space: ${m.space_id} | Repo: ${m.source_repo} | Tags: ${m.tags || "none"}\n   ${m.content.slice(0, 200)}${m.content.length > 200 ? "..." : ""}`
-      )
-      .join("\n\n");
-
-    return {
-      content: [{ type: "text", text: `Found ${results.length} memories:\n\n${formatted}` }],
-    };
-  }
-);
-
-server.tool(
-  "update_memory",
-  "Update an existing memory. Creates a version snapshot of the previous state.",
-  {
-    id: z.string().describe("UUID of the memory to update"),
-    title: z.string().optional().describe("New title"),
-    content: z.string().optional().describe("New content"),
-    tags: z.string().optional().describe("New tags"),
-  },
-  async ({ id, title, content, tags }) => {
-    const updated = updateMemory(db, id, { title, content, tags });
-    return {
-      content: [{ type: "text", text: JSON.stringify(updated, null, 2) }],
-    };
-  }
-);
-
-server.tool(
-  "delete_memory",
-  "Permanently delete a memory",
-  {
-    id: z.string().describe("UUID of the memory to delete"),
-  },
-  async ({ id }) => {
-    deleteMemory(db, id);
-    return {
-      content: [{ type: "text", text: `Memory '${id}' deleted.` }],
-    };
-  }
-);
-
-server.tool(
-  "get_context",
-  "Load all memories from all spaces this repo belongs to. Use at the start of a session to get full context.",
-  {
-    repo_path: z.string().optional().describe("Repo path (auto-detected if omitted)"),
-  },
-  async ({ repo_path }) => {
-    const result = getContext(db, repo_path ?? detectRepo());
-
-    if (result.spaces.length === 0) {
-      return {
-        content: [{ type: "text", text: `No memory spaces found for repo '${result.repo_path}'. Use create_space and add_repo_to_space to set up.` }],
-      };
-    }
-
-    const spaceSummary = result.spaces
-      .map((s) => `- ${s.id}: ${s.description}`)
-      .join("\n");
-
-    const memSummary = result.memories
-      .map(
-        (m) =>
-          `- [${m.category}] ${m.title} (${m.space_id})\n  ${m.content.slice(0, 150)}${m.content.length > 150 ? "..." : ""}`
-      )
-      .join("\n");
-
+  async ({ name, description, context_budget }) => {
+    const ch = createChannel(db, name, description, context_budget);
     return {
       content: [
         {
           type: "text",
-          text: `Context for ${result.repo_path}:\n\nSpaces:\n${spaceSummary}\n\nMemories (${result.memories.length}):\n${memSummary}`,
+          text: `Channel #${ch.id} created.\n\n${JSON.stringify(ch, null, 2)}`,
         },
       ],
     };
   }
 );
 
-// --- Handoff Tools ---
-
 server.tool(
-  "generate_handoff",
-  "Create an end-of-session handoff document so the next session can pick up where you left off.",
-  {
-    summary: z.string().describe("What happened this session"),
-    completed: z.array(z.string()).describe("List of completed items"),
-    in_progress: z.array(z.string()).describe("List of in-progress items"),
-    next_steps: z.array(z.string()).describe("List of next steps"),
-    pending_decisions: z.array(z.string()).optional().describe("List of pending decisions"),
-    context_notes: z.string().optional().describe("Freeform context for next session"),
-  },
-  async ({ summary, completed, in_progress, next_steps, pending_decisions, context_notes }) => {
-    const handoff = generateHandoff(db, {
-      repo_path: detectRepo(),
-      summary,
-      completed,
-      in_progress,
-      next_steps,
-      pending_decisions,
-      context_notes,
-    });
+  "list_channels",
+  "List all available channels with member count and activity",
+  {},
+  async () => {
+    const channels = listChannels(db);
+    if (channels.length === 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "No channels exist yet. Use create_channel to create one.",
+          },
+        ],
+      };
+    }
+    const formatted = channels
+      .map(
+        (c) =>
+          `#${c.id}: ${c.description}\n  Repos: ${c.repos.length ? c.repos.join(", ") : "(none)"}`
+      )
+      .join("\n\n");
     return {
-      content: [{ type: "text", text: `Handoff saved. ID: ${handoff.id}\n\n${JSON.stringify(handoff, null, 2)}` }],
+      content: [{ type: "text", text: `Channels:\n\n${formatted}` }],
     };
   }
 );
 
 server.tool(
-  "receive_handoff",
-  "Load the latest handoff for this repo. Use at the start of a session to pick up where you left off.",
+  "connect_repo",
+  "Connect this repo to a channel so it can send and receive messages",
   {
-    repo_path: z.string().optional().describe("Repo path (auto-detected if omitted)"),
+    channel: z.string().describe("Channel name to connect to"),
+    repo_path: z
+      .string()
+      .optional()
+      .describe("Repo path (auto-detected if omitted)"),
   },
-  async ({ repo_path }) => {
-    const handoff = receiveHandoff(db, repo_path ?? detectRepo());
+  async ({ channel, repo_path }) => {
+    const repo = repo_path ?? detectRepo();
+    connectRepo(db, channel, repo);
+    return {
+      content: [
+        { type: "text", text: `Connected '${repo}' to #${channel}.` },
+      ],
+    };
+  }
+);
 
-    if (!handoff) {
-      return {
-        content: [{ type: "text", text: "No previous handoff found for this repo." }],
-      };
+// --- Messaging ---
+
+server.tool(
+  "join_channel",
+  "Join a channel and receive a context briefing. Use at session start to get full context.",
+  {
+    channel: z.string().describe("Channel name to join"),
+  },
+  async ({ channel }) => {
+    const repo = detectRepo();
+    compressChannel(db, channel);
+    const briefing = joinChannel(db, channel, repo);
+
+    let text = `# Channel: #${briefing.channel.id}\n`;
+    text += `${briefing.channel.description}\n`;
+    text += `${briefing.channel.member_count} repos connected. ${briefing.channel.total_messages} messages total.\n`;
+
+    if (briefing.pinned.length > 0) {
+      text += `\n📌 Pinned:\n`;
+      text += briefing.pinned
+        .map((p) => `- [${p.type.toUpperCase()}] ${p.content}`)
+        .join("\n");
+      text += "\n";
     }
 
-    const completed = JSON.parse(handoff.completed) as string[];
-    const inProgress = JSON.parse(handoff.in_progress) as string[];
-    const nextSteps = JSON.parse(handoff.next_steps) as string[];
-    const pending = JSON.parse(handoff.pending_decisions) as string[];
+    if (briefing.recent.length > 0) {
+      text += `\nRecent:\n`;
+      text += briefing.recent
+        .map(
+          (r) =>
+            `- [${r.sender_repo.split("/").pop()} ${r.created_at}] ${r.content.slice(0, 200)}`
+        )
+        .join("\n");
+      text += "\n";
+    }
 
-    let text = `Last session (${handoff.created_at}):\n`;
-    text += `\nSummary: ${handoff.summary}\n`;
-    if (completed.length) text += `\nCompleted:\n${completed.map((c) => `  - ${c}`).join("\n")}\n`;
-    if (inProgress.length) text += `\nIn Progress:\n${inProgress.map((c) => `  - ${c}`).join("\n")}\n`;
-    if (nextSteps.length) text += `\nNext Steps:\n${nextSteps.map((c) => `  - ${c}`).join("\n")}\n`;
-    if (pending.length) text += `\nPending Decisions:\n${pending.map((c) => `  - ${c}`).join("\n")}\n`;
-    if (handoff.context_notes) text += `\nContext Notes: ${handoff.context_notes}\n`;
+    if (briefing.summaries.length > 0) {
+      text += `\nHistory:\n`;
+      text += briefing.summaries.map((s) => s.content).join("\n\n");
+      text += "\n";
+    }
 
     return {
       content: [{ type: "text", text }],
@@ -217,129 +163,210 @@ server.tool(
   }
 );
 
-// --- Correction Tools ---
-
 server.tool(
-  "track_correction",
-  "Log a correction when the developer corrects Claude's behavior. Claude should never repeat a corrected mistake.",
+  "post_message",
+  "Post a message to a channel. Other agents will see it on their next interaction.",
   {
-    context: z.string().describe("What was happening when the correction was made"),
-    wrong_behavior: z.string().describe("What Claude did wrong"),
-    correct_behavior: z.string().describe("What Claude should do instead"),
-    tags: z.string().optional().describe("Comma-separated tags"),
+    channel: z.string().describe("Channel to post to"),
+    content: z.string().describe("Message content"),
+    type: z
+      .enum(["chat", "decision", "convention", "correction", "task"])
+      .optional()
+      .describe("Message type (default: chat)"),
+    pin: z
+      .boolean()
+      .optional()
+      .describe("Pin this message (always in briefings, never compressed)"),
   },
-  async ({ context, wrong_behavior, correct_behavior, tags }) => {
-    const correction = trackCorrection(db, {
-      context,
-      wrong_behavior,
-      correct_behavior,
-      source_repo: detectRepo(),
-      tags,
-    });
+  async ({ channel, content, type, pin }) => {
+    const repo = detectRepo();
+    postMessage(db, { channel, content, sender_repo: repo, type, pin });
+    compressChannel(db, channel);
+    const banner = notificationBanner(repo);
     return {
-      content: [{ type: "text", text: `Correction logged. ID: ${correction.id}\n\nI will not repeat this mistake.` }],
+      content: [
+        { type: "text", text: `Message posted to #${channel}.${banner}` },
+      ],
     };
   }
 );
 
 server.tool(
-  "get_corrections",
-  "Retrieve past corrections relevant to the current context. Use this to avoid repeating mistakes.",
+  "check_messages",
+  "Check for new messages across your connected channels",
   {
-    context: z.string().optional().describe("What you're currently doing (used for FTS5 search)"),
-    tags: z.string().optional().describe("Filter by comma-separated tags"),
+    channel: z.string().optional().describe("Filter to a specific channel"),
+    since: z
+      .string()
+      .optional()
+      .describe("ISO timestamp to check from (default: last read)"),
   },
-  async ({ context, tags }) => {
-    const results = getCorrections(db, { context, tags });
+  async ({ channel, since }) => {
+    const repo = detectRepo();
+    if (channel) {
+      const effectiveSince = since ?? "1970-01-01";
+      const msgs = checkMessages(db, { channel, since: effectiveSince });
+      if (msgs.length === 0) {
+        return {
+          content: [
+            { type: "text", text: `No messages in #${channel}.` },
+          ],
+        };
+      }
+      const formatted = msgs
+        .map(
+          (m) =>
+            `- [${m.sender_repo.split("/").pop()} ${m.created_at}] [${m.type}] ${m.content.slice(0, 200)}`
+        )
+        .join("\n");
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${msgs.length} message(s) in #${channel}:\n${formatted}`,
+          },
+        ],
+      };
+    }
+
+    const notifs = getNewMessageNotifications(db, repo);
+    if (notifs.length === 0) {
+      return { content: [{ type: "text", text: "No new messages." }] };
+    }
+    const formatted = notifs
+      .map(
+        (m) =>
+          `- [${m.channel_id}] [${m.sender_repo.split("/").pop()}] ${m.content.slice(0, 200)}`
+      )
+      .join("\n");
+
+    db.prepare(
+      `UPDATE channel_repos SET last_read_at = datetime('now') WHERE repo_path = ?`
+    ).run(repo);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `${notifs.length} new message(s):\n${formatted}`,
+        },
+      ],
+    };
+  }
+);
+
+// --- Search & Management ---
+
+server.tool(
+  "search_channel",
+  "Search messages across channels using natural language",
+  {
+    query: z.string().describe("Search query"),
+    channel: z.string().optional().describe("Filter to specific channel"),
+    type: z.string().optional().describe("Filter by message type"),
+  },
+  async ({ query, channel, type }) => {
+    const repo = detectRepo();
+    const results = searchChannel(db, { query, channel, type });
+    const banner = notificationBanner(repo);
 
     if (results.length === 0) {
       return {
-        content: [{ type: "text", text: "No relevant corrections found." }],
+        content: [
+          {
+            type: "text",
+            text: `No messages matching "${query}".${banner}`,
+          },
+        ],
       };
     }
 
     const formatted = results
       .map(
-        (c, i) =>
-          `${i + 1}. Context: ${c.context}\n   Wrong: ${c.wrong_behavior}\n   Correct: ${c.correct_behavior}`
+        (m, i) =>
+          `${i + 1}. [#${m.channel_id}] [${m.type}] ${m.content.slice(0, 200)}\n   From: ${m.sender_repo} | ${m.created_at}`
       )
       .join("\n\n");
 
     return {
-      content: [{ type: "text", text: `Found ${results.length} corrections:\n\n${formatted}` }],
+      content: [
+        {
+          type: "text",
+          text: `Found ${results.length} message(s):\n\n${formatted}${banner}`,
+        },
+      ],
     };
   }
 );
 
-// --- Space Management Tools ---
-
 server.tool(
-  "create_space",
-  "Create a new named memory space for grouping related repos",
+  "pin_message",
+  "Pin a message so it's always included in context briefings",
   {
-    name: z.string().describe("Unique name for the space (e.g., 'project-alpha')"),
-    description: z.string().describe("What this space is for"),
+    message_id: z.string().describe("UUID of the message to pin"),
   },
-  async ({ name, description }) => {
-    const space = createSpace(db, name, description);
+  async ({ message_id }) => {
+    const msg = pinMessage(db, message_id);
     return {
-      content: [{ type: "text", text: `Space '${space.id}' created.\n\n${JSON.stringify(space, null, 2)}` }],
+      content: [
+        {
+          type: "text",
+          text: `Message pinned: "${msg.content.slice(0, 100)}"`,
+        },
+      ],
     };
   }
 );
 
 server.tool(
-  "list_spaces",
-  "List all memory spaces and their associated repos",
-  {},
-  async () => {
-    const spaces = listSpaces(db);
-
-    if (spaces.length === 0) {
-      return {
-        content: [{ type: "text", text: "No memory spaces exist yet. Use create_space to create one." }],
-      };
-    }
-
-    const formatted = spaces
-      .map(
-        (s) =>
-          `${s.id}: ${s.description}\n  Repos: ${s.repos.length ? s.repos.join(", ") : "(none)"}`
-      )
-      .join("\n\n");
-
-    return {
-      content: [{ type: "text", text: `Memory Spaces:\n\n${formatted}` }],
-    };
-  }
-);
-
-server.tool(
-  "add_repo_to_space",
-  "Link a repo to a memory space so it can access shared memories",
+  "disconnect_repo",
+  "Remove a repo from a channel",
   {
-    space_name: z.string().describe("Name of the space"),
-    repo_path: z.string().describe("Absolute path to the repo"),
+    channel: z.string().describe("Channel name"),
+    repo_path: z
+      .string()
+      .optional()
+      .describe("Repo path (auto-detected if omitted)"),
   },
-  async ({ space_name, repo_path }) => {
-    addRepoToSpace(db, space_name, repo_path);
+  async ({ channel, repo_path }) => {
+    const repo = repo_path ?? detectRepo();
+    disconnectRepo(db, channel, repo);
     return {
-      content: [{ type: "text", text: `Repo '${repo_path}' added to space '${space_name}'.` }],
+      content: [
+        { type: "text", text: `Disconnected '${repo}' from #${channel}.` },
+      ],
     };
   }
 );
 
+// --- Session Continuity ---
+
 server.tool(
-  "remove_repo_from_space",
-  "Unlink a repo from a memory space",
+  "handoff",
+  "Post an end-of-session handoff so the next session can pick up where you left off",
   {
-    space_name: z.string().describe("Name of the space"),
-    repo_path: z.string().describe("Absolute path to the repo"),
+    channel: z.string().describe("Channel to post handoff to"),
+    summary: z.string().describe("What happened this session"),
+    next_steps: z
+      .array(z.string())
+      .optional()
+      .describe("Suggested next steps"),
   },
-  async ({ space_name, repo_path }) => {
-    removeRepoFromSpace(db, space_name, repo_path);
+  async ({ channel, summary, next_steps }) => {
+    const repo = detectRepo();
+    const msg = postHandoff(db, {
+      channel,
+      summary,
+      sender_repo: repo,
+      next_steps,
+    });
     return {
-      content: [{ type: "text", text: `Repo '${repo_path}' removed from space '${space_name}'.` }],
+      content: [
+        {
+          type: "text",
+          text: `Handoff posted to #${channel}.\n\n${msg.content}`,
+        },
+      ],
     };
   }
 );
@@ -349,7 +376,7 @@ server.tool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Claude Memory MCP Server running on stdio");
+  console.error("ClaudeChat running on stdio");
 }
 
 main().catch((error) => {

@@ -1,10 +1,10 @@
 {
-  "name": "claude-memory",
-  "version": "0.1.0",
+  "name": "claudechat",
+  "version": "0.2.0",
   "description": "MCP server that gives Claude Code persistent memory across sessions and repos",
   "type": "module",
   "bin": {
-    "claude-memory": "./build/index.js"
+    "claudechat": "./build/index.js"
   },
   "scripts": {
     "build": "tsc && chmod 755 build/index.js",
@@ -26,7 +26,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/zzibo/claude-memory.git"
+    "url": "https://github.com/zzibo/claudechat.git"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",

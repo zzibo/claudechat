@@ -1,30 +1,25 @@
-# claude-memory
+# ClaudeChat
 
-**Persistent memory for Claude Code** -- an MCP server that lets Claude remember everything across sessions, terminals, and repositories.
+**WeChat for AI agents** -- an MCP server that lets Claude Code agents communicate across sessions, terminals, and repositories through shared channels.
 
-Claude Code is powerful, but it forgets everything when your session ends. `claude-memory` fixes that. It gives Claude a SQLite-backed brain that persists across every session, every terminal, every repo -- and lets you pick up exactly where you left off.
+Claude Code is powerful, but agents are isolated. They can't talk to each other, can't share context across repos, and forget everything when a session ends. `claudechat` fixes all three.
 
 ---
 
 ## The Problem
 
 ```
-You: "Remember, we decided to use Zustand instead of Redux for this project."
-Claude: "Got it!"
-
---- new terminal session ---
-
-You: "What state management are we using?"
-Claude: "I don't have context about your project's state management choices."
+Terminal 1 (backend/):  "I changed the API response format to { data, error }"
+Terminal 2 (frontend/): "What format does the API return?"
+Claude: "I don't have information about the API response format."
 ```
 
-## With claude-memory
+## With claudechat
 
 ```
-You: "What state management are we using?"
-Claude: *recalls memory* "You decided to use Zustand instead of Redux.
-  Decision was made on Feb 15 because of simpler boilerplate and
-  better TypeScript inference."
+Terminal 1 (backend/):  Posts to #fullstack-app: "API now returns { data, error }"
+Terminal 2 (frontend/): Joins #fullstack-app
+Claude: "Backend agent reports the API returns { data, error } format."
 ```
 
 ---
@@ -34,207 +29,209 @@ Claude: *recalls memory* "You decided to use Zustand instead of Redux.
 ### Install
 
 ```bash
-npm install -g claude-memory
+npm install -g claudechat
 ```
 
 ### Configure for Claude Code
 
-Add to your `~/.claude/claude_desktop_config.json` (or create it):
+```bash
+claude mcp add memory -- claudechat
+```
+
+Or add to your MCP config manually:
 
 ```json
 {
   "mcpServers": {
     "memory": {
-      "command": "claude-memory"
+      "command": "claudechat"
     }
   }
 }
 ```
 
-That's it. Claude Code will now have access to all 13 memory tools. The database is automatically created at `~/.claude-memory/memory.db`.
+The database is automatically created at `~/.claudechat/claudechat.db`.
 
-### Verify it works
-
-Start Claude Code and ask:
+### First use
 
 ```
-"Write a memory that this project uses TypeScript with strict mode enabled."
-```
+You: "Create a channel called my-project and connect this repo."
+You: "Post a decision: we're using TypeScript with strict mode."
 
-Close the session. Open a new one and ask:
+--- new terminal, same or different repo ---
 
+You: "Join my-project channel."
+Claude: "Channel #my-project: 1 repo, 1 message.
+  Pinned: [DECISION] We're using TypeScript with strict mode."
 ```
-"What do you remember about this project?"
-```
-
-It remembers.
 
 ---
 
 ## How It Works
 
-claude-memory is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server built with TypeScript and better-sqlite3. It exposes 13 tools that Claude Code can call to store, search, and manage persistent memories.
+Agents join **channels** -- shared communication spaces with auto-managed context. When an agent joins a channel, it receives a **context briefing**: pinned decisions and conventions at the top, recent messages in the middle, compressed history at the bottom -- all within a configurable token budget.
 
-**Search is smart.** Recall uses SQLite FTS5 full-text search with BM25 ranking, boosted by recency and repo affinity. You don't need exact keywords -- natural language queries work.
+Messages are typed. Decisions, conventions, and corrections are **never compressed** and always appear in briefings. Chat messages and task updates get compressed into summaries after 24 hours to keep context lean.
 
-**Memories are organized into spaces.** A space is a named collection of memories that can span multiple repositories. Your `web-app` frontend repo and `api-server` backend repo can share a `my-saas-project` memory space, so Claude understands the full picture.
+Every tool response piggybacks **new-message notifications**, so agents passively stay aware of what other agents are doing -- near real-time communication without WebSockets.
 
 ---
 
-## All 13 Tools
+## All 10 Tools
 
-### Core Memory
+### Channel Management
 
 | Tool | Description |
 |------|-------------|
-| `write_memory` | Store a memory with a space, category, title, content, and tags. This is the fundamental write operation. |
-| `recall` | Search memories using natural language. Uses FTS5 + BM25 ranking with recency and repo affinity boosts. Returns the most relevant memories. |
-| `update_memory` | Edit an existing memory. Automatically creates a version snapshot before overwriting, so nothing is ever truly lost. |
-| `delete_memory` | Remove a memory by ID. |
-| `get_context` | Auto-load all memories associated with the current repository. Ideal for start-of-session context loading. |
+| `create_channel` | Create a shared channel with a name, description, and optional token budget (default 4000). |
+| `list_channels` | List all channels with their connected repos. |
+| `connect_repo` | Connect the current repo to a channel. |
+
+### Messaging
+
+| Tool | Description |
+|------|-------------|
+| `join_channel` | Join a channel and receive a token-budgeted context briefing: pinned items + recent messages + compressed history. |
+| `post_message` | Post a message with a type (chat, decision, convention, correction, task). Conventions are auto-pinned. |
+| `check_messages` | Check for new messages across all connected channels. |
+
+### Search & Management
+
+| Tool | Description |
+|------|-------------|
+| `search_channel` | Full-text search across messages using FTS5. Filter by channel or message type. |
+| `pin_message` | Pin a message so it's always in context briefings and never compressed. |
+| `disconnect_repo` | Remove a repo from a channel. |
 
 ### Session Continuity
 
 | Tool | Description |
 |------|-------------|
-| `generate_handoff` | Generate an end-of-session summary: what was accomplished, what's in progress, what's next, and any open questions. Stored as a memory for the next session. |
-| `receive_handoff` | Start-of-session pickup. Retrieves the most recent handoff for the current repo so Claude can continue exactly where the last session left off. |
-
-### Corrections
-
-| Tool | Description |
-|------|-------------|
-| `track_correction` | Log when you correct Claude -- what it got wrong, what the right answer is, and the context. Claude learns from its mistakes. |
-| `get_corrections` | Retrieve past corrections relevant to the current context so Claude avoids repeating the same errors. |
-
-### Space Management
-
-| Tool | Description |
-|------|-------------|
-| `create_space` | Create a named memory space (e.g., `my-saas-project`). |
-| `list_spaces` | List all spaces and their associated repositories. |
-| `add_repo_to_space` | Link a repository to a space. Memories in that space become accessible when working in the repo. |
-| `remove_repo_from_space` | Unlink a repository from a space. |
+| `handoff` | Post an end-of-session summary with next steps. The next agent that joins sees it in the briefing. |
 
 ---
 
-## Memory Spaces
+## Smart Channels
 
-Spaces are the organizational backbone of claude-memory. They solve a real problem: most projects span multiple repos, but AI assistants treat each repo as an isolated island.
+Channels are the core concept. They solve three problems at once:
+
+**1. Cross-repo communication**
+```
+#fullstack-app
+  /Users/me/backend  (Express API)
+  /Users/me/frontend (React app)
+  /Users/me/shared   (TypeScript types)
+```
+All three repos share one channel. Backend posts "Added /api/auth", frontend sees it immediately.
+
+**2. Managed context (no firehose)**
+
+When you join a channel, you don't get a raw dump of everything. You get a structured briefing:
 
 ```
-                    my-saas-project (space)
-                   /        |        \
-           web-app/     api-server/   shared-types/
-           (React)      (Express)     (TypeScript)
+Channel: #fullstack-app
+2 repos connected. 47 messages total.
+
+Pinned:
+- [DECISION] Use JWT for auth (not sessions)
+- [CONVENTION] All API responses use { data, error } shape
+- [CORRECTION] Don't use default exports, use named exports
+
+Recent:
+- [backend 10m ago] Added /api/refresh endpoint
+- [frontend 5m ago] Updated login to call /api/auth
+
+History:
+Feb 17 (8 messages):
+  [backend] Set up database, auth middleware with JWT
+  [frontend] Scaffolded React app, added login page
 ```
 
-When you work in `web-app/`, Claude can recall memories from the entire `my-saas-project` space -- including API contracts stored while working in `api-server/` and type definitions from `shared-types/`.
+**3. Auto-compression**
 
-### Setting up a space
+Old messages get compressed into summaries. Decisions, conventions, and corrections are never compressed -- they persist forever. Chat messages are compressed after 24 hours. The channel stays clean without manual curation.
 
-```
-You: "Create a memory space called my-saas-project and link this repo to it."
-You: "Also link ~/code/api-server and ~/code/shared-types to that space."
-```
+---
 
-Now memories written in any of those repos are searchable from all of them.
+## Message Types
+
+| Type | Purpose | Compressed? |
+|------|---------|-------------|
+| `chat` | General updates, status | Yes, after 24h |
+| `decision` | Architecture/design decisions | Never |
+| `convention` | Coding conventions, preferences | Never (auto-pinned) |
+| `correction` | "Don't do X, do Y instead" | Never |
+| `task` | Task updates, blockers | Yes, when done |
+| `handoff` | End-of-session summary | Yes, after next session |
 
 ---
 
 ## Example Workflows
 
+### Cross-Repo Communication
+
+Terminal 1 (backend/):
+```
+You: "Post to #my-app: Added /api/auth endpoint, returns JWT. POST with { email, password }."
+```
+
+Terminal 2 (frontend/):
+```
+You: "Check for new messages."
+Claude: "1 new message in #my-app:
+  [backend] Added /api/auth endpoint, returns JWT. POST with { email, password }."
+```
+
 ### Session Handoff
 
-The killer feature. At the end of a session:
-
+End of session:
 ```
-You: "Generate a handoff."
-Claude: *creates handoff memory*
+You: "Handoff to #my-app."
+Claude: "Session Summary: Completed auth middleware. JWT signing and verification working.
 
-  ## Session Handoff - web-app
-  ### Completed
-  - Migrated auth from JWT to session cookies
-  - Updated all API routes to use new auth middleware
-  ### In Progress
-  - User settings page (component done, API integration remaining)
-  ### Next Steps
-  - Connect settings form to PUT /api/user/settings
-  - Add optimistic updates
-  ### Open Questions
-  - Should we cache user settings client-side? Need to discuss with team.
+  Next Steps:
+  - Add token refresh endpoint
+  - Set up rate limiting"
 ```
 
-Next session, in a new terminal:
-
+Next session:
 ```
-You: "Pick up where we left off."
-Claude: *receives handoff* "Last session you migrated auth to session cookies
-  and started the user settings page. The component is done -- we need to
-  connect it to PUT /api/user/settings and add optimistic updates. There's
-  also an open question about client-side caching of user settings."
-```
-
-Zero context lost.
-
-### Cross-Repo Knowledge Sharing
-
-Working in `api-server/`:
-
-```
-You: "Remember that the /api/user/settings endpoint expects
-  { theme, notifications, timezone } in the request body."
-```
-
-Later, working in `web-app/`:
-
-```
-You: "What does the user settings API expect?"
-Claude: *recalls from shared space* "The PUT /api/user/settings endpoint
-  expects { theme, notifications, timezone } in the request body."
+You: "Join #my-app."
+Claude: "Recent: [HANDOFF] Completed auth middleware. Next steps: add token refresh, set up rate limiting."
 ```
 
 ### Correction Tracking
 
 ```
-You: "No, don't use useEffect for that -- use useSyncExternalStore.
-  Track that correction."
-Claude: *tracks correction* "Noted: for subscribing to external stores in
-  React, use useSyncExternalStore instead of useEffect. Logged for future
-  reference."
+You: "Post a correction: don't use useEffect for external store subscriptions, use useSyncExternalStore."
 ```
 
-Next time a similar pattern comes up:
-
-```
-Claude: *checks corrections* "I recall you previously corrected me on this --
-  using useSyncExternalStore instead of useEffect for external store
-  subscriptions."
-```
+Every agent that joins the channel sees this correction in the pinned section.
 
 ---
 
 ## Architecture
 
 ```
-~/.claude-memory/
-  memory.db          SQLite database (auto-created)
+~/.claudechat/
+  memory.db             SQLite database (WAL mode, auto-created)
 
-claude-memory/
+claudechat/
   src/
-    index.ts          MCP server entry point
+    index.ts            MCP server entry point (10 tools)
     db/
-      connection.ts   SQLite connection + migrations
-      schema.ts       Table definitions + FTS5 setup
+      connection.ts     SQLite connection (WAL + foreign keys)
+      schema.ts         v2 schema (channels, messages, summaries, FTS5)
     tools/
-      memory.ts       write_memory, recall, update_memory, delete_memory
-      context.ts      get_context
-      handoff.ts      generate_handoff, receive_handoff
-      corrections.ts  track_correction, get_corrections
-      spaces.ts       create_space, list_spaces, add/remove_repo_to_space
+      channels.ts       create, list, connect, disconnect
+      messaging.ts      post, check, notifications
+      search.ts         FTS5 search, pin
+      briefing.ts       join_channel context assembly
+      handoff.ts        session handoff messages
+      compression.ts    extractive compression engine
     utils/
-      repo.ts         Repository path detection
-      search.ts       FTS5 query building + ranking
+      repo.ts           Repo path detection
+      search.ts         FTS5 query building
 ```
 
 ---
@@ -242,53 +239,36 @@ claude-memory/
 ## Development
 
 ```bash
-# Clone
-git clone https://github.com/zzibo/claude-memory.git
-cd claude-memory
-
-# Install dependencies
+git clone https://github.com/zzibo/claudechat.git
+cd claudechat
 npm install
-
-# Build
 npm run build
-
-# Run in dev mode (with tsx)
-npm run dev
-
-# Run tests
-npm test
-
-# Inspect with MCP Inspector
-npm run inspector
+npm test         # 63 tests
+npm run dev      # dev mode with tsx
+npm run inspector # MCP Inspector
 ```
 
 ---
 
-## Roadmap
+## CLAUDE.md Integration
 
-v2 is coming. Here's what's planned:
+Add this to your project's `CLAUDE.md` for the best experience:
 
-- **Pattern detection** -- Claude notices recurring patterns across sessions and surfaces them proactively
-- **Decision log** -- First-class support for architectural decisions with context, alternatives considered, and rationale
-- **Inter-session messaging** -- Leave notes for your future self (or future Claude)
-- **Multi-agent task coordination** -- Multiple Claude Code instances sharing memory for parallel workstreams
+```markdown
+## Memory Channels
+When starting a session, check for available channels with `list_channels()`.
+Ask me before joining any channel. Show the channel name and description.
+Check for new messages before making cross-repo decisions.
+```
 
 ---
 
 ## Contributing
 
-Contributions are welcome. Here's how:
-
-1. Fork the repo
-2. Create a feature branch (`git checkout -b feature/something-useful`)
-3. Make your changes
-4. Run tests (`npm test`)
-5. Open a PR
-
-Please open an issue first for large changes so we can discuss the approach.
+Contributions welcome. Fork, branch, test, PR. Open an issue first for large changes.
 
 ---
 
 ## License
 
-[MIT](LICENSE) -- see LICENSE file for details.
+[MIT](LICENSE)
