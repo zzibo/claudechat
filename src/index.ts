@@ -9,6 +9,7 @@ import {
   listChannels,
   connectRepo,
   disconnectRepo,
+  syncChannel,
 } from "./tools/channels.js";
 import {
   postMessage,
@@ -39,6 +40,53 @@ function notificationBanner(repoPath: string): string {
   );
   return `\n\n📬 ${notifs.length} new message(s):\n${lines.join("\n")}`;
 }
+
+// --- Sync (primary entry point) ---
+
+server.tool(
+  "sync",
+  "Auto-detect repo, create/join channel, and get context briefing. Call this at session start — it handles everything.",
+  {},
+  async () => {
+    const repo = detectRepo();
+    const channelName = syncChannel(db, repo);
+    compressChannel(db, channelName);
+    const briefing = joinChannel(db, channelName, repo);
+
+    let text = `# Channel: #${briefing.channel.id}\n`;
+    text += `${briefing.channel.description}\n`;
+    text += `${briefing.channel.member_count} repos connected. ${briefing.channel.total_messages} messages total.\n`;
+
+    if (briefing.pinned.length > 0) {
+      text += `\n📌 Pinned:\n`;
+      text += briefing.pinned
+        .map((p) => `- [${p.type.toUpperCase()}] ${p.content}`)
+        .join("\n");
+      text += "\n";
+    }
+
+    if (briefing.recent.length > 0) {
+      text += `\nRecent:\n`;
+      text += briefing.recent
+        .map(
+          (r) =>
+            `- [${r.sender_repo.split("/").pop()} ${r.created_at}] ${r.content.slice(0, 200)}`
+        )
+        .join("\n");
+      text += "\n";
+    }
+
+    if (briefing.summaries.length > 0) {
+      text += `\nHistory:\n`;
+      text += briefing.summaries.map((s) => s.content).join("\n\n");
+      text += "\n";
+    }
+
+    return {
+      content: [{ type: "text", text }],
+    };
+  }
+);
 
 // --- Channel Management ---
 

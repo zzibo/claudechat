@@ -6,6 +6,7 @@ import {
   listChannels,
   connectRepo,
   disconnectRepo,
+  syncChannel,
 } from "../../src/tools/channels.js";
 
 describe("Channel Management", () => {
@@ -84,6 +85,42 @@ describe("Channel Management", () => {
       disconnectRepo(db, "ch", "/repo");
       const channels = listChannels(db);
       expect(channels[0].repos.length).toBe(0);
+    });
+  });
+
+  describe("syncChannel", () => {
+    it("creates channel and connects repo if neither exist", () => {
+      const name = syncChannel(db, "/Users/zibo/my-project");
+      expect(name).toBe("my-project");
+      const channels = listChannels(db);
+      expect(channels.length).toBe(1);
+      expect(channels[0].id).toBe("my-project");
+      expect(channels[0].repos).toContain("/Users/zibo/my-project");
+    });
+
+    it("reuses existing channel on second call", () => {
+      syncChannel(db, "/Users/zibo/my-project");
+      syncChannel(db, "/Users/zibo/my-project");
+      const channels = listChannels(db);
+      expect(channels.length).toBe(1);
+      expect(channels[0].repos.length).toBe(1);
+    });
+
+    it("connects a second repo to the same channel name", () => {
+      syncChannel(db, "/Users/alice/my-project");
+      syncChannel(db, "/Users/bob/my-project");
+      const channels = listChannels(db);
+      expect(channels.length).toBe(1);
+      expect(channels[0].repos.length).toBe(2);
+    });
+
+    it("derives channel name from last path segment", () => {
+      expect(syncChannel(db, "/a/b/c/deep-repo")).toBe("deep-repo");
+      expect(syncChannel(db, "/single")).toBe("single");
+    });
+
+    it("falls back to 'default' for empty path", () => {
+      expect(syncChannel(db, "")).toBe("default");
     });
   });
 });
