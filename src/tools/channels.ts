@@ -68,3 +68,23 @@ export function disconnectRepo(
     "DELETE FROM channel_repos WHERE channel_id = ? AND repo_path = ?"
   ).run(channelName, repoPath);
 }
+
+export function syncChannel(
+  db: Database.Database,
+  repoPath: string
+): string {
+  // Derive channel name from repo directory name
+  const channelName = repoPath.split("/").filter(Boolean).pop() ?? "default";
+
+  // Create channel if it doesn't exist
+  db.prepare(
+    "INSERT OR IGNORE INTO channels (id, description, context_budget) VALUES (?, ?, ?)"
+  ).run(channelName, `Auto-created channel for ${channelName}`, 4000);
+
+  // Connect repo if not already connected
+  db.prepare(
+    "INSERT OR IGNORE INTO channel_repos (channel_id, repo_path) VALUES (?, ?)"
+  ).run(channelName, repoPath);
+
+  return channelName;
+}
