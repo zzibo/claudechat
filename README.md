@@ -18,7 +18,7 @@ Claude: "I don't have information about the API response format."
 
 ```
 Terminal 1 (backend/):  Posts to #fullstack-app: "API now returns { data, error }"
-Terminal 2 (frontend/): Joins #fullstack-app
+Terminal 2 (frontend/): Syncs to #fullstack-app
 Claude: "Backend agent reports the API returns { data, error } format."
 ```
 
@@ -55,12 +55,14 @@ The database is automatically created at `~/.claudechat/claudechat.db`.
 ### First use
 
 ```
-You: "Create a channel called my-project and connect this repo."
+You: "Sync to my-project."
+Claude: "Synced to #my-project. No prior context."
+
 You: "Post a decision: we're using TypeScript with strict mode."
 
 --- new terminal, same or different repo ---
 
-You: "Join my-project channel."
+You: "Sync to my-project."
 Claude: "Channel #my-project: 1 repo, 1 message.
   Pinned: [DECISION] We're using TypeScript with strict mode."
 ```
@@ -69,7 +71,7 @@ Claude: "Channel #my-project: 1 repo, 1 message.
 
 ## How It Works
 
-Agents join **channels** -- shared communication spaces with auto-managed context. When an agent joins a channel, it receives a **context briefing**: pinned decisions and conventions at the top, recent messages in the middle, compressed history at the bottom -- all within a configurable token budget.
+Agents sync to **channels** -- shared communication spaces with auto-managed context. When an agent calls `sync`, it receives a **context briefing**: pinned decisions and conventions at the top, recent messages in the middle, compressed history at the bottom -- all within a configurable token budget.
 
 Messages are typed. Decisions, conventions, and corrections are **never compressed** and always appear in briefings. Chat messages and task updates get compressed into summaries after 24 hours to keep context lean.
 
@@ -77,37 +79,15 @@ Every tool response piggybacks **new-message notifications**, so agents passivel
 
 ---
 
-## All 10 Tools
-
-### Channel Management
+## 5 Tools
 
 | Tool | Description |
 |------|-------------|
-| `create_channel` | Create a shared channel with a name, description, and optional token budget (default 4000). |
-| `list_channels` | List all channels with their connected repos. |
-| `connect_repo` | Connect the current repo to a channel. |
-
-### Messaging
-
-| Tool | Description |
-|------|-------------|
-| `join_channel` | Join a channel and receive a token-budgeted context briefing: pinned items + recent messages + compressed history. |
-| `post_message` | Post a message with a type (chat, decision, convention, correction, task). Conventions are auto-pinned. |
-| `check_messages` | Check for new messages across all connected channels. |
-
-### Search & Management
-
-| Tool | Description |
-|------|-------------|
-| `search_channel` | Full-text search across messages using FTS5. Filter by channel or message type. |
-| `pin_message` | Pin a message so it's always in context briefings and never compressed. |
-| `disconnect_repo` | Remove a repo from a channel. |
-
-### Session Continuity
-
-| Tool | Description |
-|------|-------------|
-| `handoff` | Post an end-of-session summary with next steps. The next agent that joins sees it in the briefing. |
+| `sync` | **ALWAYS call at session start.** Auto-detects repo, creates/joins channel, returns context briefing. Optional `channel` param for cross-repo coordination. |
+| `post` | Post messages. Types: `chat`, `decision`, `convention`, `correction`, `task`, `handoff`. Use type `handoff` with `next_steps` when ending a session. |
+| `check` | Check for new messages. Call before starting new tasks or periodically during long sessions. |
+| `search` | Search past messages by keyword. Set `pin` param to pin a message permanently in briefings. |
+| `manage` | Admin: create channels with custom settings, list channels, connect/disconnect repos. Rarely needed since `sync` handles setup automatically. |
 
 ---
 
@@ -126,7 +106,7 @@ All three repos share one channel. Backend posts "Added /api/auth", frontend see
 
 **2. Managed context (no firehose)**
 
-When you join a channel, you don't get a raw dump of everything. You get a structured briefing:
+When you sync to a channel, you don't get a raw dump of everything. You get a structured briefing:
 
 ```
 Channel: #fullstack-app
@@ -186,17 +166,13 @@ Claude: "1 new message in #my-app:
 
 End of session:
 ```
-You: "Handoff to #my-app."
-Claude: "Session Summary: Completed auth middleware. JWT signing and verification working.
-
-  Next Steps:
-  - Add token refresh endpoint
-  - Set up rate limiting"
+You: "Post a handoff: completed auth middleware. Next steps: add token refresh, set up rate limiting."
+Claude: "Posted handoff to #my-app with 2 next steps."
 ```
 
 Next session:
 ```
-You: "Join #my-app."
+You: "Sync to #my-app."
 Claude: "Recent: [HANDOFF] Completed auth middleware. Next steps: add token refresh, set up rate limiting."
 ```
 
@@ -206,7 +182,7 @@ Claude: "Recent: [HANDOFF] Completed auth middleware. Next steps: add token refr
 You: "Post a correction: don't use useEffect for external store subscriptions, use useSyncExternalStore."
 ```
 
-Every agent that joins the channel sees this correction in the pinned section.
+Every agent that syncs to the channel sees this correction in the pinned section.
 
 ---
 
@@ -218,7 +194,7 @@ Every agent that joins the channel sees this correction in the pinned section.
 
 claudechat/
   src/
-    index.ts            MCP server entry point (10 tools)
+    index.ts            MCP server entry point (5 tools)
     db/
       connection.ts     SQLite connection (WAL + foreign keys)
       schema.ts         v2 schema (channels, messages, summaries, FTS5)
@@ -226,7 +202,7 @@ claudechat/
       channels.ts       create, list, connect, disconnect
       messaging.ts      post, check, notifications
       search.ts         FTS5 search, pin
-      briefing.ts       join_channel context assembly
+      briefing.ts       sync context assembly
       handoff.ts        session handoff messages
       compression.ts    extractive compression engine
     utils/
@@ -256,9 +232,9 @@ Add this to your project's `CLAUDE.md` for the best experience:
 
 ```markdown
 ## Memory Channels
-When starting a session, check for available channels with `list_channels()`.
-Ask me before joining any channel. Show the channel name and description.
+When starting a session, call `sync()` to connect and get context.
 Check for new messages before making cross-repo decisions.
+Post a handoff with next steps when ending a session.
 ```
 
 ---
