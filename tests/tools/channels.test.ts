@@ -122,5 +122,13 @@ describe("Channel Management", () => {
     it("falls back to 'default' for empty path", () => {
       expect(syncChannel(db, "")).toBe("default");
     });
+
+    it("uses provided channel name instead of deriving from repo", () => {
+      const name = syncChannel(db, "/Users/zibo/my-project", "shared-app");
+      expect(name).toBe("shared-app");
+      const channels = listChannels(db);
+      expect(channels[0].id).toBe("shared-app");
+      expect(channels[0].repos).toContain("/Users/zibo/my-project");
+    });
   });
 });
