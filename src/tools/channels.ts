@@ -71,10 +71,10 @@ export function disconnectRepo(
 
 export function syncChannel(
   db: Database.Database,
-  repoPath: string
+  repoPath: string,
+  channelOverride?: string
 ): string {
-  // Derive channel name from repo directory name
-  const channelName = repoPath.split("/").filter(Boolean).pop() ?? "default";
+  const channelName = channelOverride ?? repoPath.split("/").filter(Boolean).pop() ?? "default";
 
   // Create channel if it doesn't exist
   db.prepare(
