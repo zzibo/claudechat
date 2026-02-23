@@ -18,6 +18,7 @@ import {
 } from "./tools/messaging.js";
 import { searchChannel, pinMessage } from "./tools/search.js";
 import { joinChannel } from "./tools/briefing.js";
+import type { ChannelBriefing } from "./tools/briefing.js";
 import { postHandoff } from "./tools/handoff.js";
 import { compressChannel } from "./tools/compression.js";
 import { detectRepo } from "./utils/repo.js";
@@ -27,7 +28,7 @@ applySchema(db);
 
 const server = new McpServer({
   name: "claudechat",
-  version: "0.2.0",
+  version: "0.3.0",
 });
 
 // Helper: format notification banner
@@ -41,193 +42,103 @@ function notificationBanner(repoPath: string): string {
   return `\n\n📬 ${notifs.length} new message(s):\n${lines.join("\n")}`;
 }
 
-// --- Sync (primary entry point) ---
+// Helper: format briefing response
+function formatBriefing(briefing: ChannelBriefing): string {
+  let text = `# Channel: #${briefing.channel.id}\n`;
+  text += `${briefing.channel.description}\n`;
+  text += `${briefing.channel.member_count} repos connected. ${briefing.channel.total_messages} messages total.\n`;
+
+  if (briefing.pinned.length > 0) {
+    text += `\n📌 Pinned:\n`;
+    text += briefing.pinned
+      .map((p) => `- [${p.type.toUpperCase()}] ${p.content}`)
+      .join("\n");
+    text += "\n";
+  }
+
+  if (briefing.recent.length > 0) {
+    text += `\nRecent:\n`;
+    text += briefing.recent
+      .map(
+        (r) =>
+          `- [${r.sender_repo.split("/").pop()} ${r.created_at}] ${r.content.slice(0, 200)}`
+      )
+      .join("\n");
+    text += "\n";
+  }
+
+  if (briefing.summaries.length > 0) {
+    text += `\nHistory:\n`;
+    text += briefing.summaries.map((s) => s.content).join("\n\n");
+    text += "\n";
+  }
+
+  return text;
+}
+
+// --- sync ---
 
 server.tool(
   "sync",
-  "Auto-detect repo, create/join channel, and get context briefing. Call this at session start — it handles everything.",
-  {},
-  async () => {
-    const repo = detectRepo();
-    const channelName = syncChannel(db, repo);
-    compressChannel(db, channelName);
-    const briefing = joinChannel(db, channelName, repo);
-
-    let text = `# Channel: #${briefing.channel.id}\n`;
-    text += `${briefing.channel.description}\n`;
-    text += `${briefing.channel.member_count} repos connected. ${briefing.channel.total_messages} messages total.\n`;
-
-    if (briefing.pinned.length > 0) {
-      text += `\n📌 Pinned:\n`;
-      text += briefing.pinned
-        .map((p) => `- [${p.type.toUpperCase()}] ${p.content}`)
-        .join("\n");
-      text += "\n";
-    }
-
-    if (briefing.recent.length > 0) {
-      text += `\nRecent:\n`;
-      text += briefing.recent
-        .map(
-          (r) =>
-            `- [${r.sender_repo.split("/").pop()} ${r.created_at}] ${r.content.slice(0, 200)}`
-        )
-        .join("\n");
-      text += "\n";
-    }
-
-    if (briefing.summaries.length > 0) {
-      text += `\nHistory:\n`;
-      text += briefing.summaries.map((s) => s.content).join("\n\n");
-      text += "\n";
-    }
-
-    return {
-      content: [{ type: "text", text }],
-    };
-  }
-);
-
-// --- Channel Management ---
-
-server.tool(
-  "create_channel",
-  "Create a new shared channel for agent communication",
+  "ALWAYS call this at the start of every session before doing any work. Auto-detects your repo, creates or joins the matching channel, and returns a context briefing with pinned decisions, recent messages, and history. Pass an optional channel name for cross-repo collaboration.",
   {
-    name: z.string().describe("Unique channel name (e.g., 'fullstack-app')"),
-    description: z.string().describe("What this channel coordinates"),
-    context_budget: z
-      .number()
-      .optional()
-      .describe("Max tokens for context briefing (default 4000)"),
-  },
-  async ({ name, description, context_budget }) => {
-    const ch = createChannel(db, name, description, context_budget);
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Channel #${ch.id} created.\n\n${JSON.stringify(ch, null, 2)}`,
-        },
-      ],
-    };
-  }
-);
-
-server.tool(
-  "list_channels",
-  "List all available channels with member count and activity",
-  {},
-  async () => {
-    const channels = listChannels(db);
-    if (channels.length === 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "No channels exist yet. Use create_channel to create one.",
-          },
-        ],
-      };
-    }
-    const formatted = channels
-      .map(
-        (c) =>
-          `#${c.id}: ${c.description}\n  Repos: ${c.repos.length ? c.repos.join(", ") : "(none)"}`
-      )
-      .join("\n\n");
-    return {
-      content: [{ type: "text", text: `Channels:\n\n${formatted}` }],
-    };
-  }
-);
-
-server.tool(
-  "connect_repo",
-  "Connect this repo to a channel so it can send and receive messages",
-  {
-    channel: z.string().describe("Channel name to connect to"),
-    repo_path: z
+    channel: z
       .string()
       .optional()
-      .describe("Repo path (auto-detected if omitted)"),
-  },
-  async ({ channel, repo_path }) => {
-    const repo = repo_path ?? detectRepo();
-    connectRepo(db, channel, repo);
-    return {
-      content: [
-        { type: "text", text: `Connected '${repo}' to #${channel}.` },
-      ],
-    };
-  }
-);
-
-// --- Messaging ---
-
-server.tool(
-  "join_channel",
-  "Join a channel and receive a context briefing. Use at session start to get full context.",
-  {
-    channel: z.string().describe("Channel name to join"),
+      .describe("Channel name override for cross-repo collaboration (auto-derived from repo name if omitted)"),
   },
   async ({ channel }) => {
     const repo = detectRepo();
-    compressChannel(db, channel);
-    const briefing = joinChannel(db, channel, repo);
-
-    let text = `# Channel: #${briefing.channel.id}\n`;
-    text += `${briefing.channel.description}\n`;
-    text += `${briefing.channel.member_count} repos connected. ${briefing.channel.total_messages} messages total.\n`;
-
-    if (briefing.pinned.length > 0) {
-      text += `\n📌 Pinned:\n`;
-      text += briefing.pinned
-        .map((p) => `- [${p.type.toUpperCase()}] ${p.content}`)
-        .join("\n");
-      text += "\n";
-    }
-
-    if (briefing.recent.length > 0) {
-      text += `\nRecent:\n`;
-      text += briefing.recent
-        .map(
-          (r) =>
-            `- [${r.sender_repo.split("/").pop()} ${r.created_at}] ${r.content.slice(0, 200)}`
-        )
-        .join("\n");
-      text += "\n";
-    }
-
-    if (briefing.summaries.length > 0) {
-      text += `\nHistory:\n`;
-      text += briefing.summaries.map((s) => s.content).join("\n\n");
-      text += "\n";
-    }
-
+    const channelName = syncChannel(db, repo, channel);
+    compressChannel(db, channelName);
+    const briefing = joinChannel(db, channelName, repo);
     return {
-      content: [{ type: "text", text }],
+      content: [{ type: "text", text: formatBriefing(briefing) }],
     };
   }
 );
 
+// --- post ---
+
 server.tool(
-  "post_message",
-  "Post a message to a channel. Other agents will see it on their next interaction.",
+  "post",
+  "Post a message to your channel. Call this when you: complete a feature or milestone, make an architectural decision, encounter a blocker, or are ending a session (use type 'handoff' with next_steps). Other agents see your messages on their next interaction.",
   {
     channel: z.string().describe("Channel to post to"),
     content: z.string().describe("Message content"),
     type: z
-      .enum(["chat", "decision", "convention", "correction", "task"])
+      .enum(["chat", "decision", "convention", "correction", "task", "handoff"])
       .optional()
       .describe("Message type (default: chat)"),
     pin: z
       .boolean()
       .optional()
       .describe("Pin this message (always in briefings, never compressed)"),
+    next_steps: z
+      .array(z.string())
+      .optional()
+      .describe("Suggested next steps (only used with type 'handoff')"),
   },
-  async ({ channel, content, type, pin }) => {
+  async ({ channel, content, type, pin, next_steps }) => {
     const repo = detectRepo();
+
+    if (type === "handoff") {
+      const msg = postHandoff(db, {
+        channel,
+        summary: content,
+        sender_repo: repo,
+        next_steps,
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Handoff posted to #${channel}.\n\n${msg.content}`,
+          },
+        ],
+      };
+    }
+
     postMessage(db, { channel, content, sender_repo: repo, type, pin });
     compressChannel(db, channel);
     const banner = notificationBanner(repo);
@@ -239,9 +150,11 @@ server.tool(
   }
 );
 
+// --- check ---
+
 server.tool(
-  "check_messages",
-  "Check for new messages across your connected channels",
+  "check",
+  "Check for new messages from other agents. Call this before starting work on a new task, when switching context, or periodically during long sessions. Shows unread messages across your connected channels.",
   {
     channel: z.string().optional().describe("Filter to a specific channel"),
     since: z
@@ -303,18 +216,35 @@ server.tool(
   }
 );
 
-// --- Search & Management ---
+// --- search ---
 
 server.tool(
-  "search_channel",
-  "Search messages across channels using natural language",
+  "search",
+  "Search past messages by keyword. Use when you need to recall a past decision, convention, or discussion. Set pin to a message ID to make it permanent in all future briefings.",
   {
     query: z.string().describe("Search query"),
     channel: z.string().optional().describe("Filter to specific channel"),
     type: z.string().optional().describe("Filter by message type"),
+    pin: z
+      .string()
+      .optional()
+      .describe("Message UUID to pin (instead of searching)"),
   },
-  async ({ query, channel, type }) => {
+  async ({ query, channel, type, pin }) => {
     const repo = detectRepo();
+
+    if (pin) {
+      const msg = pinMessage(db, pin);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Message pinned: "${msg.content.slice(0, 100)}"`,
+          },
+        ],
+      };
+    }
+
     const results = searchChannel(db, { query, channel, type });
     const banner = notificationBanner(repo);
 
@@ -332,7 +262,7 @@ server.tool(
     const formatted = results
       .map(
         (m, i) =>
-          `${i + 1}. [#${m.channel_id}] [${m.type}] ${m.content.slice(0, 200)}\n   From: ${m.sender_repo} | ${m.created_at}`
+          `${i + 1}. [#${m.channel_id}] [${m.type}] ${m.content.slice(0, 200)}\n   ID: ${m.id} | From: ${m.sender_repo} | ${m.created_at}`
       )
       .join("\n\n");
 
@@ -347,75 +277,107 @@ server.tool(
   }
 );
 
-server.tool(
-  "pin_message",
-  "Pin a message so it's always included in context briefings",
-  {
-    message_id: z.string().describe("UUID of the message to pin"),
-  },
-  async ({ message_id }) => {
-    const msg = pinMessage(db, message_id);
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Message pinned: "${msg.content.slice(0, 100)}"`,
-        },
-      ],
-    };
-  }
-);
+// --- manage ---
 
 server.tool(
-  "disconnect_repo",
-  "Remove a repo from a channel",
+  "manage",
+  "Admin operations: create a channel with custom settings, list all channels, connect or disconnect repos. You rarely need this — sync handles most setup automatically.",
   {
-    channel: z.string().describe("Channel name"),
+    action: z
+      .enum(["create", "list", "connect", "disconnect"])
+      .describe("Admin action to perform"),
+    channel: z
+      .string()
+      .optional()
+      .describe("Channel name (required for create/connect/disconnect)"),
+    description: z
+      .string()
+      .optional()
+      .describe("Channel description (for create)"),
+    context_budget: z
+      .number()
+      .optional()
+      .describe("Max tokens for context briefing (for create, default 4000)"),
     repo_path: z
       .string()
       .optional()
-      .describe("Repo path (auto-detected if omitted)"),
+      .describe("Repo path (for connect/disconnect, auto-detected if omitted)"),
   },
-  async ({ channel, repo_path }) => {
-    const repo = repo_path ?? detectRepo();
-    disconnectRepo(db, channel, repo);
-    return {
-      content: [
-        { type: "text", text: `Disconnected '${repo}' from #${channel}.` },
-      ],
-    };
-  }
-);
-
-// --- Session Continuity ---
-
-server.tool(
-  "handoff",
-  "Post an end-of-session handoff so the next session can pick up where you left off",
-  {
-    channel: z.string().describe("Channel to post handoff to"),
-    summary: z.string().describe("What happened this session"),
-    next_steps: z
-      .array(z.string())
-      .optional()
-      .describe("Suggested next steps"),
-  },
-  async ({ channel, summary, next_steps }) => {
-    const repo = detectRepo();
-    const msg = postHandoff(db, {
-      channel,
-      summary,
-      sender_repo: repo,
-      next_steps,
-    });
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Handoff posted to #${channel}.\n\n${msg.content}`,
-        },
-      ],
-    };
+  async ({ action, channel, description, context_budget, repo_path }) => {
+    switch (action) {
+      case "create": {
+        if (!channel || !description) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Error: 'channel' and 'description' are required for create.",
+              },
+            ],
+          };
+        }
+        const ch = createChannel(db, channel, description, context_budget);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Channel #${ch.id} created.\n\n${JSON.stringify(ch, null, 2)}`,
+            },
+          ],
+        };
+      }
+      case "list": {
+        const channels = listChannels(db);
+        if (channels.length === 0) {
+          return {
+            content: [
+              { type: "text", text: "No channels exist yet. Use sync to auto-create one." },
+            ],
+          };
+        }
+        const formatted = channels
+          .map(
+            (c) =>
+              `#${c.id}: ${c.description}\n  Repos: ${c.repos.length ? c.repos.join(", ") : "(none)"}`
+          )
+          .join("\n\n");
+        return {
+          content: [{ type: "text", text: `Channels:\n\n${formatted}` }],
+        };
+      }
+      case "connect": {
+        if (!channel) {
+          return {
+            content: [
+              { type: "text", text: "Error: 'channel' is required for connect." },
+            ],
+          };
+        }
+        const repo = repo_path ?? detectRepo();
+        connectRepo(db, channel, repo);
+        return {
+          content: [
+            { type: "text", text: `Connected '${repo}' to #${channel}.` },
+          ],
+        };
+      }
+      case "disconnect": {
+        if (!channel) {
+          return {
+            content: [
+              { type: "text", text: "Error: 'channel' is required for disconnect." },
+            ],
+          };
+        }
+        const repo = repo_path ?? detectRepo();
+        disconnectRepo(db, channel, repo);
+        return {
+          content: [
+            { type: "text", text: `Disconnected '${repo}' from #${channel}.` },
+          ],
+        };
+      }
+    }
   }
 );
 
