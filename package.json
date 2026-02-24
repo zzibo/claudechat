@@ -1,6 +1,6 @@
 {
   "name": "claudechat",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "MCP server that gives Claude Code persistent memory across sessions and repos",
   "type": "module",
   "bin": {
